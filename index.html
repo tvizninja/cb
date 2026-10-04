@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="theme-color" content="#0b6cff" />
   <title>E-badge Web BLE</title>
-  <link rel="stylesheet" href="./app.css" />
+  <link rel="stylesheet" href="./app.css?v=0.3.0" />
 </head>
 <body>
   <header class="app-header">
@@ -74,7 +74,10 @@
         </div>
 
         <div class="preview-wrap">
-          <canvas id="previewCanvas" width="368" height="368"></canvas>
+          <div class="crop-stage">
+            <canvas id="previewCanvas" width="368" height="368" aria-label="画像クロッププレビュー"></canvas>
+            <div id="cropHint" class="crop-hint">ドラッグで位置調整</div>
+          </div>
           <div class="preview-meta">
             <div>出力: <strong>368 × 368</strong></div>
             <div>JPEG: <strong id="jpegSize">-</strong></div>
@@ -87,15 +90,23 @@
           <label>
             リサイズ方法
             <select id="fitMode">
-              <option value="cover" selected>中央クロップ（cover）</option>
-              <option value="contain">全体表示（contain）</option>
-              <option value="stretch">引き伸ばし</option>
+              <option value="cover" selected>クロップして正方形</option>
+              <option value="contain">全体表示（余白あり）</option>
+              <option value="stretch">正方形へ引き伸ばし</option>
             </select>
+          </label>
+          <label>
+            拡大率 <span id="zoomValue">1.00×</span>
+            <input id="zoomInput" type="range" min="1" max="3" step="0.01" value="1" />
           </label>
           <label>
             チャンク間隔（ms）
             <input id="chunkDelay" type="number" min="0" max="100" step="1" value="12" />
           </label>
+          <div class="crop-controls">
+            <span>クロップ位置</span>
+            <button id="resetCropBtn" type="button">中央に戻す</button>
+          </div>
         </div>
 
         <label class="inline-check">
@@ -150,9 +161,9 @@
   </main>
 
   <footer>
-    <small>Web Bluetooth対応のChrome / Edge系ブラウザ、HTTPS環境が必要です。</small>
+    <small id="appVersion">E-badge Web BLE v0.3.0</small>
   </footer>
 
-  <script type="module" src="./app.js"></script>
+  <script type="module" src="./app.js?v=0.3.0"></script>
 </body>
 </html>

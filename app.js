@@ -6,6 +6,7 @@ const UUID = Object.freeze({
 
 const IMAGE = Object.freeze({ width: 368, height: 368, chunkSize: 446, opcode: 0x06 });
 const STORAGE_KEY = 'ebadge.macDeviceMap.v1';
+const APP_VERSION = '0.3.0';
 
 const $ = (id) => document.getElementById(id);
 const state = {
@@ -19,6 +20,9 @@ const state = {
   sending: false,
   pendingTransferAck: null,
   postTransferInfoWaiter: null,
+  imageBitmap: null,
+  crop: { zoom: 1, offsetX: 0, offsetY: 0 },
+  drag: null,
 };
 
 function ts() {
@@ -215,22 +219,58 @@ function makePicturePayload(jpegBytes) {
   return concatBytes(prefix, imb, jpegBytes, suffix);
 }
 
-async function loadImageFile(file) {
-  const bitmap = await createImageBitmap(file);
+function resetCrop(render = true) {
+  state.crop.zoom = 1;
+  state.crop.offsetX = 0;
+  state.crop.offsetY = 0;
+  $('zoomInput').value = '1';
+  $('zoomValue').textContent = '1.00×';
+  if (render && state.imageBitmap) renderPreview();
+}
+
+function clampCropOffset(rw, rh, dw, dh) {
+  const maxX = Math.max(0, (rw - dw) / 2);
+  const maxY = Math.max(0, (rh - dh) / 2);
+  state.crop.offsetX = Math.max(-maxX, Math.min(maxX, state.crop.offsetX));
+  state.crop.offsetY = Math.max(-maxY, Math.min(maxY, state.crop.offsetY));
+}
+
+function renderPreview() {
+  const bitmap = state.imageBitmap;
+  if (!bitmap) return;
   const canvas = $('previewCanvas');
   const ctx = canvas.getContext('2d', { alpha:false });
+  const dw = canvas.width, dh = canvas.height;
   ctx.fillStyle = '#000';
-  ctx.fillRect(0,0,canvas.width,canvas.height);
+  ctx.fillRect(0, 0, dw, dh);
+
   const mode = $('fitMode').value;
-  const sw = bitmap.width, sh = bitmap.height, dw = canvas.width, dh = canvas.height;
+  const sw = bitmap.width, sh = bitmap.height;
   if (mode === 'stretch') {
     ctx.drawImage(bitmap, 0, 0, dw, dh);
   } else {
-    const scale = mode === 'cover' ? Math.max(dw/sw, dh/sh) : Math.min(dw/sw, dh/sh);
+    const baseScale = mode === 'cover' ? Math.max(dw / sw, dh / sh) : Math.min(dw / sw, dh / sh);
+    const zoom = mode === 'cover' ? state.crop.zoom : 1;
+    const scale = baseScale * zoom;
     const rw = sw * scale, rh = sh * scale;
-    ctx.drawImage(bitmap, (dw-rw)/2, (dh-rh)/2, rw, rh);
+    if (mode === 'cover') clampCropOffset(rw, rh, dw, dh);
+    const ox = mode === 'cover' ? state.crop.offsetX : 0;
+    const oy = mode === 'cover' ? state.crop.offsetY : 0;
+    ctx.drawImage(bitmap, (dw - rw) / 2 + ox, (dh - rh) / 2 + oy, rw, rh);
   }
-  bitmap.close();
+
+  const cropEnabled = mode === 'cover';
+  $('zoomInput').disabled = !cropEnabled;
+  $('resetCropBtn').disabled = !cropEnabled;
+  $('cropHint').classList.toggle('hidden', !cropEnabled);
+  canvas.style.cursor = cropEnabled ? 'grab' : 'default';
+}
+
+async function loadImageFile(file) {
+  state.imageBitmap?.close?.();
+  state.imageBitmap = await createImageBitmap(file);
+  resetCrop(false);
+  renderPreview();
   await generateJpeg();
 }
 
@@ -372,19 +412,73 @@ $('chooseDeviceBtn').addEventListener('click', wrapAsync(chooseDevice));
 $('disconnectBtn').addEventListener('click', () => state.device?.gatt?.disconnect());
 $('qualityInput').addEventListener('input', () => { $('qualityValue').textContent = Number($('qualityInput').value).toFixed(2); });
 $('qualityInput').addEventListener('change', wrapAsync(generateJpeg));
-$('fitMode').addEventListener('change', async () => {
-  const file = $('imageInput').files?.[0];
-  if (file) await wrapAsync(loadImageFile)(file);
+$('fitMode').addEventListener('change', wrapAsync(async () => {
+  if (!state.imageBitmap) return;
+  resetCrop(false);
+  renderPreview();
+  await generateJpeg();
+}));
+$('zoomInput').addEventListener('input', () => {
+  state.crop.zoom = Number($('zoomInput').value);
+  $('zoomValue').textContent = `${state.crop.zoom.toFixed(2)}×`;
+  renderPreview();
 });
+$('zoomInput').addEventListener('change', wrapAsync(generateJpeg));
+$('resetCropBtn').addEventListener('click', wrapAsync(async () => {
+  if (!state.imageBitmap) return;
+  resetCrop();
+  await generateJpeg();
+}));
 $('imageInput').addEventListener('change', async () => {
   const file = $('imageInput').files?.[0];
   if (file) await wrapAsync(loadImageFile)(file);
 });
 $('prepareImageBtn').addEventListener('click', wrapAsync(async () => {
-  const file = $('imageInput').files?.[0];
-  if (!file) throw new Error('画像を選択してください');
-  await loadImageFile(file);
+  if (!state.imageBitmap) {
+    const file = $('imageInput').files?.[0];
+    if (!file) throw new Error('画像を選択してください');
+    await loadImageFile(file);
+    return;
+  }
+  renderPreview();
+  await generateJpeg();
 }));
+
+const cropCanvas = $('previewCanvas');
+cropCanvas.addEventListener('pointerdown', (event) => {
+  if (!state.imageBitmap || $('fitMode').value !== 'cover') return;
+  event.preventDefault();
+  cropCanvas.setPointerCapture(event.pointerId);
+  const rect = cropCanvas.getBoundingClientRect();
+  state.drag = {
+    pointerId: event.pointerId,
+    startX: event.clientX,
+    startY: event.clientY,
+    offsetX: state.crop.offsetX,
+    offsetY: state.crop.offsetY,
+    scaleX: cropCanvas.width / rect.width,
+    scaleY: cropCanvas.height / rect.height,
+  };
+  cropCanvas.classList.add('dragging');
+});
+cropCanvas.addEventListener('pointermove', (event) => {
+  const d = state.drag;
+  if (!d || d.pointerId !== event.pointerId) return;
+  event.preventDefault();
+  state.crop.offsetX = d.offsetX + (event.clientX - d.startX) * d.scaleX;
+  state.crop.offsetY = d.offsetY + (event.clientY - d.startY) * d.scaleY;
+  renderPreview();
+});
+async function endCropDrag(event) {
+  const d = state.drag;
+  if (!d || d.pointerId !== event.pointerId) return;
+  state.drag = null;
+  cropCanvas.classList.remove('dragging');
+  try { cropCanvas.releasePointerCapture(event.pointerId); } catch {}
+  try { await generateJpeg(); } catch (e) { log(`ERROR: ${e?.message || e}`); }
+}
+cropCanvas.addEventListener('pointerup', endCropDrag);
+cropCanvas.addEventListener('pointercancel', endCropDrag);
 $('sendImageBtn').addEventListener('click', wrapAsync(sendImage));
 $('sendHexBtn').addEventListener('click', wrapAsync(sendHex));
 $('clearLogBtn').addEventListener('click', () => { $('debugLog').value=''; });
@@ -401,7 +495,9 @@ $('downloadLogBtn').addEventListener('click', () => {
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 });
 
+$('appVersion').textContent = `E-badge Web BLE v${APP_VERSION}`;
 log('App initialized', {
+  version: APP_VERSION,
   href: location.href,
   preferredMac: state.preferredMac || null,
   bluetoothSupported: !!navigator.bluetooth,

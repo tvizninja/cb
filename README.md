@@ -1,4 +1,4 @@
-# E-badge Web BLE PoC
+# E-badge Web BLE PoC v0.3.0
 
 KEIYO / Beambox系 E-badge向けの静的Web Bluetooth実験アプリです。
 
@@ -12,7 +12,6 @@ KEIYO / Beambox系 E-badge向けの静的Web Bluetooth実験アプリです。
 
 など任意のFQDN・パス深さで動作します。
 
-Web BluetoothのためHTTPS（またはlocalhost）が必要です。
 
 ## MACクエリ
 
@@ -52,3 +51,12 @@ PoCです。IMBヘッダの一部フィールドは実機ログから観測し�
 - ACK後、次の device info (opcode 0x0D) を最大3秒待ち、既定ではGATTを自動切断します。
 - バッジが接続中Bluetooth表示に残るケースを避けるための動作です。必要なら画像タブで自動切断をOFFにできます。
 - `navigator.bluetooth.getDevices()` 非対応ブラウザでは `?mac=` による自動再接続はできず、Bluetooth chooserが開きます。
+
+## v0.3.0
+
+- 画像プレビューをドラッグしてクロップ位置を調整できます。
+- 1.00〜3.00倍の拡大率で簡易ズームできます。
+- 最終送信画像は従来どおり368x368 JPEGへ変換されます。
+- 「全体表示」「引き伸ばし」も残しています。
+- フッターにWebアプリのバージョンを常時表示します。
+- CSS/JSの参照URLにもバージョンを付け、更新確認時のキャッシュ混乱を減らしています。
