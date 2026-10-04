@@ -98,10 +98,17 @@
           </label>
         </div>
 
+        <label class="inline-check">
+          <input id="autoDisconnect" type="checkbox" checked />
+          転送成功後に自動切断（バッジを通常表示へ戻す）
+        </label>
+
         <div class="button-row">
           <button id="prepareImageBtn">画像を再生成</button>
           <button id="sendImageBtn" class="primary" disabled>バッジへ送信</button>
         </div>
+
+        <div id="transferResult" class="transfer-result" aria-live="polite"></div>
 
         <div class="progress-wrap">
           <progress id="sendProgress" max="100" value="0"></progress>

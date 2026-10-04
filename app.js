@@ -17,6 +17,8 @@ const state = {
   payload: null,
   preferredMac: normalizeMac(new URLSearchParams(location.search).get('mac') || ''),
   sending: false,
+  pendingTransferAck: null,
+  postTransferInfoWaiter: null,
 };
 
 function ts() {
@@ -134,7 +136,18 @@ function onNotify(event) {
   const bytes = new Uint8Array(event.target.value.buffer, event.target.value.byteOffset, event.target.value.byteLength);
   log(`RX notify (${bytes.length} bytes)`, bytesToHex(bytes));
   const parsed = parseNotify(bytes);
-  if (parsed) log('RX parsed', parsed);
+  if (!parsed) return;
+  log('RX parsed', parsed);
+
+  if (parsed.opcode === 0x0B && parsed.text === '{GetPacketSuccess}') {
+    state.pendingTransferAck?.resolve(parsed);
+    state.pendingTransferAck = null;
+  }
+
+  if (parsed.opcode === 0x0D && state.postTransferInfoWaiter) {
+    state.postTransferInfoWaiter.resolve(parsed);
+    state.postTransferInfoWaiter = null;
+  }
 }
 
 function parseNotify(bytes) {
@@ -238,6 +251,31 @@ async function generateJpeg() {
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
+function deferredWithTimeout(timeoutMs, label) {
+  let timer;
+  let resolveOuter, rejectOuter;
+  const promise = new Promise((resolve, reject) => {
+    resolveOuter = (value) => { clearTimeout(timer); resolve(value); };
+    rejectOuter = (err) => { clearTimeout(timer); reject(err); };
+    timer = setTimeout(() => reject(new Error(`${label} timeout (${timeoutMs} ms)`)), timeoutMs);
+  });
+  return { promise, resolve: resolveOuter, reject: rejectOuter };
+}
+
+async function waitForTransferAck(timeoutMs = 5000) {
+  const d = deferredWithTimeout(timeoutMs, 'GetPacketSuccess');
+  state.pendingTransferAck = d;
+  try { return await d.promise; }
+  finally { if (state.pendingTransferAck === d) state.pendingTransferAck = null; }
+}
+
+async function waitForPostTransferDeviceInfo(timeoutMs = 3000) {
+  const d = deferredWithTimeout(timeoutMs, 'post-transfer device info');
+  state.postTransferInfoWaiter = d;
+  try { return await d.promise; }
+  finally { if (state.postTransferInfoWaiter === d) state.postTransferInfoWaiter = null; }
+}
+
 async function sendImage() {
   if (!state.writer || !state.payload) throw new Error('Not ready');
   const delayMs = Math.max(0, Number($('chunkDelay').value) || 0);
@@ -246,7 +284,13 @@ async function sendImage() {
   updateSendButton();
   $('sendProgress').value = 0;
   $('progressText').textContent = '0%';
+  $('transferResult').className = 'transfer-result';
+  $('transferResult').textContent = '転送中…';
   log('Image transfer start', { total, payloadBytes:state.payload.length, chunkSize:IMAGE.chunkSize, delayMs });
+
+  // ACK waiter must exist before the last chunk is sent, because the badge can answer quickly.
+  const ackWait = deferredWithTimeout(5000, 'GetPacketSuccess');
+  state.pendingTransferAck = ackWait;
 
   try {
     for (let n = 0; n < total; n++) {
@@ -265,7 +309,33 @@ async function sendImage() {
       $('progressText').textContent = `${pct}%`;
       if (delayMs) await sleep(delayMs);
     }
-    log('All image chunks written; waiting for device notification');
+
+    log('All image chunks written; waiting for {GetPacketSuccess}');
+    const ack = await ackWait.promise;
+    if (state.pendingTransferAck === ackWait) state.pendingTransferAck = null;
+    log('Image transfer acknowledged', { opcode: ack.opcode, text: ack.text });
+    $('transferResult').className = 'transfer-result success';
+    $('transferResult').textContent = '転送成功: バッジがデータを受理しました';
+
+    if ($('autoDisconnect').checked) {
+      log('Waiting for post-transfer device info before disconnect');
+      try {
+        const info = await waitForPostTransferDeviceInfo(3000);
+        log('Post-transfer device info received', info.json || { text: info.text });
+      } catch (e) {
+        log('Post-transfer device info was not observed; disconnecting anyway', { message:e.message });
+      }
+      await sleep(150);
+      if (state.device?.gatt?.connected) {
+        log('Auto disconnect after successful image transfer');
+        state.device.gatt.disconnect();
+      }
+    }
+  } catch (e) {
+    if (state.pendingTransferAck === ackWait) state.pendingTransferAck = null;
+    $('transferResult').className = 'transfer-result error';
+    $('transferResult').textContent = `転送失敗: ${e?.message || e}`;
+    throw e;
   } finally {
     state.sending = false;
     updateSendButton();

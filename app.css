@@ -52,3 +52,7 @@ code { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
 
 .inline-check { display:flex; flex-direction:row; align-items:center; gap:.55rem; margin:1rem 0 .6rem; font-weight:600; }
 .inline-check input { width:auto; }
+
+.transfer-result { min-height:1.5em; margin-top:.8rem; font-weight:700; }
+.transfer-result.success { color:#16803d; }
+.transfer-result.error { color:#b33b3b; }

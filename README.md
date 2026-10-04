@@ -45,3 +45,10 @@ Web Bluetooth APIはBluetoothデバイスの実MACアドレスをWebページへ
 ## 注意
 
 PoCです。IMBヘッダの一部フィールドは実機ログから観測した固定値を使用しています。またWeb Bluetooth実装ごとにWrite Without Responseのキュー挙動が異なる可能性があるため、初期値12msのチャンク間隔を設定しています。
+
+## v0.2 実機確認反映
+
+- `{GetPacketSuccess}` を転送成功ACKとして待機します。
+- ACK後、次の device info (opcode 0x0D) を最大3秒待ち、既定ではGATTを自動切断します。
+- バッジが接続中Bluetooth表示に残るケースを避けるための動作です。必要なら画像タブで自動切断をOFFにできます。
+- `navigator.bluetooth.getDevices()` 非対応ブラウザでは `?mac=` による自動再接続はできず、Bluetooth chooserが開きます。
