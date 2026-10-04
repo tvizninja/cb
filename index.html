@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#0b6cff" />
+  <title>E-badge Web BLE</title>
+  <link rel="stylesheet" href="./app.css" />
+</head>
+<body>
+  <header class="app-header">
+    <div>
+      <h1>E-badge Web BLE</h1>
+      <p class="subtitle">KEIYO / Beambox 系バッジ向け実験ツール</p>
+    </div>
+    <div id="statusChip" class="status-chip disconnected">未接続</div>
+  </header>
+
+  <nav class="tabs" aria-label="機能タブ">
+    <button class="tab active" data-tab="connection">接続</button>
+    <button class="tab" data-tab="image">画像</button>
+    <button class="tab" data-tab="debug">デバッグ</button>
+  </nav>
+
+  <main>
+    <section id="tab-connection" class="tab-panel active">
+      <div class="card">
+        <h2>バッジ接続</h2>
+        <div class="grid two">
+          <label>
+            優先MAC（クエリ由来）
+            <input id="macInput" type="text" readonly placeholder="未指定" />
+          </label>
+          <label>
+            接続済みデバイス名
+            <input id="deviceName" type="text" readonly placeholder="未接続" />
+          </label>
+        </div>
+        <div class="button-row">
+          <button id="connectPreferredBtn" class="primary">優先デバイスに接続</button>
+          <button id="chooseDeviceBtn">デバイスを選択</button>
+          <button id="disconnectBtn" disabled>切断</button>
+        </div>
+        <p class="hint">
+          初回はブラウザのBluetooth選択画面から手動で選びます。URLに <code>?mac=deadbeefcafe</code> がある場合、
+          初回選択したデバイスをそのMACの優先デバイスとしてこのブラウザ内に記憶し、次回以降の再接続に利用します。
+        </p>
+      </div>
+
+      <div class="card">
+        <h2>接続情報</h2>
+        <dl class="kv">
+          <dt>Service</dt><dd><code>000001f0-0000-1000-8000-00805f9b34fb</code></dd>
+          <dt>Write</dt><dd><code>000001f1-0000-1000-8000-00805f9b34fb</code></dd>
+          <dt>Notify</dt><dd><code>000001f2-0000-1000-8000-00805f9b34fb</code></dd>
+          <dt>状態</dt><dd id="connectionState">未接続</dd>
+          <dt>device.id</dt><dd id="deviceId">-</dd>
+        </dl>
+      </div>
+    </section>
+
+    <section id="tab-image" class="tab-panel">
+      <div class="card">
+        <h2>画像アップロード</h2>
+        <div class="grid two">
+          <label>
+            画像ファイル
+            <input id="imageInput" type="file" accept="image/*" />
+          </label>
+          <label>
+            JPEG品質 <span id="qualityValue">0.88</span>
+            <input id="qualityInput" type="range" min="0.50" max="1.00" step="0.01" value="0.88" />
+          </label>
+        </div>
+
+        <div class="preview-wrap">
+          <canvas id="previewCanvas" width="368" height="368"></canvas>
+          <div class="preview-meta">
+            <div>出力: <strong>368 × 368</strong></div>
+            <div>JPEG: <strong id="jpegSize">-</strong></div>
+            <div>転送payload: <strong id="payloadSize">-</strong></div>
+            <div>チャンク: <strong id="chunkCount">-</strong></div>
+          </div>
+        </div>
+
+        <div class="grid two">
+          <label>
+            リサイズ方法
+            <select id="fitMode">
+              <option value="cover" selected>中央クロップ（cover）</option>
+              <option value="contain">全体表示（contain）</option>
+              <option value="stretch">引き伸ばし</option>
+            </select>
+          </label>
+          <label>
+            チャンク間隔（ms）
+            <input id="chunkDelay" type="number" min="0" max="100" step="1" value="12" />
+          </label>
+        </div>
+
+        <div class="button-row">
+          <button id="prepareImageBtn">画像を再生成</button>
+          <button id="sendImageBtn" class="primary" disabled>バッジへ送信</button>
+        </div>
+
+        <div class="progress-wrap">
+          <progress id="sendProgress" max="100" value="0"></progress>
+          <span id="progressText">0%</span>
+        </div>
+
+        <p class="hint warning">
+          実機解析に基づくPoCです。最初は小さなテスト画像で確認してください。送信中はページを閉じず、Bluetooth接続を維持してください。
+        </p>
+      </div>
+    </section>
+
+    <section id="tab-debug" class="tab-panel">
+      <div class="card">
+        <h2>デバッグログ</h2>
+        <div class="button-row">
+          <button id="copyLogBtn">ログをコピー</button>
+          <button id="downloadLogBtn">ログを保存</button>
+          <button id="clearLogBtn">クリア</button>
+        </div>
+        <label class="inline-check">
+          <input id="verboseTxLog" type="checkbox" />
+          詳細TXログ（各送信フレームを全HEXで記録）
+        </label>
+        <textarea id="debugLog" class="debug-log" readonly spellcheck="false"></textarea>
+      </div>
+
+      <div class="card">
+        <h2>手動HEX送信</h2>
+        <label>
+          16進数（例: <code>F1 06 00 01 00 00 00 00 08</code>）
+          <textarea id="hexInput" rows="4" spellcheck="false"></textarea>
+        </label>
+        <div class="button-row">
+          <button id="sendHexBtn" disabled>01F1へ送信</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <small>Web Bluetooth対応のChrome / Edge系ブラウザ、HTTPS環境が必要です。</small>
+  </footer>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
