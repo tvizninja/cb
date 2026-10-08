@@ -78,3 +78,12 @@ PoCです。IMBヘッダの一部フィールドは実機ログから観測し�
 - Animation ACK timeout now starts after the final BLE chunk, while the ACK listener is armed before transmission.
 - Animation ACK wait increased to 30 seconds after the final chunk; still images use 15 seconds.
 - Existing captured type-5 container structure is preserved: 0x12345678 header, frame directory, circular record links, JPEG records.
+
+## v0.6.1 animation preview / crop
+
+- GIF / MP4 / WebM 等を選ぶと、先頭フレームを 368x368 キャンバスへ表示します。
+- `クロップして正方形` では画像タブと同様にドラッグ位置調整と 1.00-3.00x ズームができます。
+- `全体表示（余白あり）` と `正方形へ引き伸ばし` も選べます。
+- クロップ設定は全サンプリングフレームに共通適用されます。
+- `アニメーション生成` 後のプレビューは元動画ではなく、実際に生成した JPEG フレーム列を再デコードし、`intervalMs` 間隔でループ表示します。
+- クロップや品質を変更した場合は、JPEG列を再生成してから送信してください。

@@ -7,7 +7,7 @@ const UUID = Object.freeze({
 const IMAGE = Object.freeze({ width: 368, height: 368, chunkSize: 446, opcode: 0x06 });
 const ANIMATION = Object.freeze({ width: 368, height: 368, chunkSize: 446, opcode: 0x05, imageType: 11 });
 const STORAGE_KEY = 'ebadge.macDeviceMap.v1';
-const APP_VERSION = '0.5.0';
+const APP_VERSION = '0.6.1';
 
 const $ = (id) => document.getElementById(id);
 const state = {
@@ -19,6 +19,8 @@ const state = {
   payload: null,
   animationPayload: null,
   animationFrames: null,
+  animationMeta: null,
+  lastDeviceInfo: null,
   preferredMac: normalizeMac(new URLSearchParams(location.search).get('mac') || ''),
   sending: false,
   pendingTransferAck: null,
@@ -26,6 +28,13 @@ const state = {
   imageBitmap: null,
   crop: { zoom: 1, offsetX: 0, offsetY: 0 },
   drag: null,
+  animCropSource: null,
+  animCrop: { zoom: 1, offsetX: 0, offsetY: 0 },
+  animDrag: null,
+  animPreviewPlaying: false,
+  animPreviewTimer: null,
+  animPreviewIndex: 0,
+  animPreviewBitmap: null,
 };
 
 function ts() {
@@ -148,9 +157,12 @@ function onNotify(event) {
   log('RX parsed', parsed);
 
   if (parsed.opcode === 0x0B && parsed.text === '{GetPacketSuccess}') {
+    parsed.receivedAtMs = performance.now();
     state.pendingTransferAck?.resolve(parsed);
     state.pendingTransferAck = null;
   }
+
+  if (parsed.opcode === 0x0D && parsed.json) state.lastDeviceInfo = parsed.json;
 
   if (parsed.opcode === 0x0D && state.postTransferInfoWaiter) {
     state.postTransferInfoWaiter.resolve(parsed);
@@ -228,11 +240,11 @@ function writeU32LE(view, offset, value) {
   view.setUint32(offset, value >>> 0, true);
 }
 
-function makeAnimationPayload(jpegFrames, intervalMs) {
+function makeAnimationPayload(jpegFrames, intervalMs, containerType = 5) {
   if (!Array.isArray(jpegFrames) || jpegFrames.length < 2) throw new Error('Animation needs at least 2 frames');
   const frameCount = jpegFrames.length;
   const enc = new TextEncoder();
-  const prefix = enc.encode('{"type":5,"data":');
+  const prefix = enc.encode(`{"type":${containerType},"data":`);
   const suffix = enc.encode('}');
   const pathText = `output/${intervalMs}ms`;
   const pathBytes = enc.encode(pathText);
@@ -285,6 +297,25 @@ function makeAnimationPayload(jpegFrames, intervalMs) {
   return concatBytes(prefix, data, suffix);
 }
 
+function animationProtocol() {
+  const mode = $('animProtocolMode')?.value || 'type5-f105';
+  if (mode === 'type6-f105') return { mode, containerType: 6, opcode: 0x05, label: 'type 6 / F1 05', experimental: true };
+  if (mode === 'type6-f106') return { mode, containerType: 6, opcode: 0x06, label: 'type 6 / F1 06', experimental: true };
+  return { mode: 'type5-f105', containerType: 5, opcode: 0x05, label: 'type 5 / F1 05', experimental: false };
+}
+
+function rebuildAnimationPayloadFromFrames() {
+  if (!state.animationFrames?.length || !state.animationMeta) return;
+  const protocol = animationProtocol();
+  state.animationPayload = makeAnimationPayload(state.animationFrames, state.animationMeta.intervalMs, protocol.containerType);
+  const chunks = Math.ceil(state.animationPayload.length / ANIMATION.chunkSize);
+  $('animPayloadBytes').textContent = `${state.animationPayload.length.toLocaleString()} bytes`;
+  $('animChunkCount').textContent = String(chunks);
+  $('animPlaybackPeriod').textContent = `${(state.animationFrames.length * state.animationMeta.intervalMs / 1000).toFixed(3)} s`;
+  $('animProtocolSummary').textContent = protocol.label + (protocol.experimental ? ' (実験)' : '');
+  updateSendButton();
+}
+
 function animationSettings() {
   const durationSec = Number($('animDuration').value);
   const fps = Number($('animFps').value);
@@ -296,9 +327,12 @@ function animationSettings() {
 function updateAnimationSettingsUi(syncInterval = false) {
   const fps = Number($('animFps').value);
   if (syncInterval) $('animIntervalMs').value = String(Math.max(1, Math.round(1000 / fps)));
-  const { frameCount } = animationSettings();
+  const { frameCount, intervalMs } = animationSettings();
   $('animFrameCount').value = String(frameCount);
   $('animQualityValue').textContent = Number($('animQuality').value).toFixed(2);
+  $('animPlaybackPeriod').textContent = `${(frameCount * intervalMs / 1000).toFixed(3)} s`;
+  const protocol = animationProtocol();
+  $('animProtocolSummary').textContent = protocol.label + (protocol.experimental ? ' (実験)' : '');
 }
 
 function drawMovingColorBars(canvas, frameIndex, frameCount) {
@@ -334,17 +368,110 @@ async function canvasToJpegBytes(canvas, quality) {
 }
 
 
-function drawSourceToCanvas(source, canvas) {
+function drawSourceToCanvas(source, canvas, crop = state.animCrop, fitMode = $('animFitMode')?.value || 'cover') {
   const ctx = canvas.getContext('2d', { alpha: false });
   const dw = canvas.width, dh = canvas.height;
   const sw = source.displayWidth || source.videoWidth || source.naturalWidth || source.width;
   const sh = source.displayHeight || source.videoHeight || source.naturalHeight || source.height;
   if (!sw || !sh) throw new Error('メディアの寸法を取得できません');
-  const scale = Math.max(dw / sw, dh / sh);
-  const rw = sw * scale, rh = sh * scale;
   ctx.fillStyle = '#000';
   ctx.fillRect(0, 0, dw, dh);
-  ctx.drawImage(source, (dw - rw) / 2, (dh - rh) / 2, rw, rh);
+  if (fitMode === 'stretch') {
+    ctx.drawImage(source, 0, 0, dw, dh);
+    return;
+  }
+  const baseScale = fitMode === 'cover' ? Math.max(dw / sw, dh / sh) : Math.min(dw / sw, dh / sh);
+  const zoom = fitMode === 'cover' ? crop.zoom : 1;
+  const scale = baseScale * zoom;
+  const rw = sw * scale, rh = sh * scale;
+  if (fitMode === 'cover') {
+    const maxX = Math.max(0, (rw - dw) / 2);
+    const maxY = Math.max(0, (rh - dh) / 2);
+    crop.offsetX = Math.max(-maxX, Math.min(maxX, crop.offsetX));
+    crop.offsetY = Math.max(-maxY, Math.min(maxY, crop.offsetY));
+  }
+  const ox = fitMode === 'cover' ? crop.offsetX : 0;
+  const oy = fitMode === 'cover' ? crop.offsetY : 0;
+  ctx.drawImage(source, (dw - rw) / 2 + ox, (dh - rh) / 2 + oy, rw, rh);
+}
+
+function resetAnimCrop(render = true) {
+  state.animCrop.zoom = 1;
+  state.animCrop.offsetX = 0;
+  state.animCrop.offsetY = 0;
+  $('animZoomInput').value = '1';
+  $('animZoomValue').textContent = '1.00×';
+  if (render) renderAnimSourcePreview();
+}
+
+function renderAnimSourcePreview() {
+  if (!state.animCropSource) return;
+  stopAnimationPreview(false);
+  drawSourceToCanvas(state.animCropSource, $('animPreviewCanvas'));
+  const cropEnabled = $('animFitMode').value === 'cover';
+  $('animZoomInput').disabled = !cropEnabled;
+  $('animResetCropBtn').disabled = !cropEnabled;
+  $('animCropHint').classList.toggle('hidden', !cropEnabled);
+  $('animPreviewCanvas').style.cursor = cropEnabled ? 'grab' : 'default';
+  $('animPreviewState').textContent = 'クロップ確認';
+}
+
+async function loadAnimationCropSource(file) {
+  stopAnimationPreview();
+  state.animCropSource?.close?.();
+  state.animCropSource = null;
+  if (!file) return;
+  if (file.type === 'image/gif' || /\.gif$/i.test(file.name)) {
+    state.animCropSource = await createImageBitmap(file);
+  } else {
+    const url = URL.createObjectURL(file);
+    const video = document.createElement('video');
+    video.preload = 'auto'; video.muted = true; video.playsInline = true; video.src = url;
+    try {
+      await once(video, 'loadeddata');
+      state.animCropSource = await createImageBitmap(video);
+    } finally {
+      URL.revokeObjectURL(url); video.removeAttribute('src'); video.load();
+    }
+  }
+  resetAnimCrop(false);
+  renderAnimSourcePreview();
+}
+
+async function renderAnimationJpegFrame(index) {
+  if (!state.animationFrames?.length) return;
+  const bytes = state.animationFrames[index % state.animationFrames.length];
+  const bitmap = await createImageBitmap(new Blob([bytes], { type:'image/jpeg' }));
+  state.animPreviewBitmap?.close?.();
+  state.animPreviewBitmap = bitmap;
+  const canvas = $('animPreviewCanvas');
+  const ctx = canvas.getContext('2d', { alpha:false });
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  $('animPreviewState').textContent = `JPEG ${index + 1}/${state.animationFrames.length}`;
+}
+
+function stopAnimationPreview(resetButton = true) {
+  state.animPreviewPlaying = false;
+  if (state.animPreviewTimer) clearTimeout(state.animPreviewTimer);
+  state.animPreviewTimer = null;
+  if (resetButton && $('animPreviewToggleBtn')) $('animPreviewToggleBtn').textContent = '再生';
+}
+
+async function animationPreviewTick() {
+  if (!state.animPreviewPlaying || !state.animationFrames?.length) return;
+  const idx = state.animPreviewIndex % state.animationFrames.length;
+  await renderAnimationJpegFrame(idx);
+  state.animPreviewIndex = (idx + 1) % state.animationFrames.length;
+  if (state.animPreviewPlaying) state.animPreviewTimer = setTimeout(animationPreviewTick, state.animationMeta?.intervalMs || 100);
+}
+
+async function toggleAnimationPreview() {
+  if (!state.animationFrames?.length) return;
+  if (state.animPreviewPlaying) { stopAnimationPreview(); return; }
+  state.animPreviewPlaying = true;
+  $('animPreviewToggleBtn').textContent = '停止';
+  await animationPreviewTick();
 }
 
 function once(target, eventName) {
@@ -467,17 +594,26 @@ async function prepareAnimationTest() {
   }
 
   const jpegTotal = frames.reduce((n, b) => n + b.length, 0);
-  const payload = makeAnimationPayload(frames, settings.intervalMs);
+  const protocol = animationProtocol();
+  const payload = makeAnimationPayload(frames, settings.intervalMs, protocol.containerType);
   state.animationFrames = frames;
+  state.animationMeta = { ...settings, quality, sourceKind: sourceMeta.sourceKind, fitMode: $('animFitMode').value, crop: { ...state.animCrop } };
   state.animationPayload = payload;
   const chunks = Math.ceil(payload.length / ANIMATION.chunkSize);
   $('animFrameCount').value = String(frames.length);
   $('animJpegBytes').textContent = `${jpegTotal.toLocaleString()} bytes`;
   $('animPayloadBytes').textContent = `${payload.length.toLocaleString()} bytes`;
   $('animChunkCount').textContent = String(chunks);
+  $('animAverageJpeg').textContent = `${Math.round(jpegTotal / frames.length).toLocaleString()} bytes`;
+  $('animPlaybackPeriod').textContent = `${(frames.length * settings.intervalMs / 1000).toFixed(3)} s`;
+  $('animProtocolSummary').textContent = protocol.label + (protocol.experimental ? ' (実験)' : '');
   $('animTransferResult').textContent = `生成完了。${frames.length} frames / interval ${settings.intervalMs} ms`;
+  $('animPreviewToggleBtn').disabled = false;
+  state.animPreviewIndex = 0;
+  stopAnimationPreview();
+  await renderAnimationJpegFrame(0);
   log('Animation prepared', {
-    mode, durationSec: settings.durationSec, fps: settings.fps, intervalMs: settings.intervalMs,
+    mode, protocol, durationSec: settings.durationSec, fps: settings.fps, intervalMs: settings.intervalMs,
     frameCount: frames.length, jpegTotal, payloadBytes: payload.length, chunks, quality,
     sourceMeta: { ...sourceMeta, frames: undefined }
   });
@@ -486,6 +622,7 @@ async function prepareAnimationTest() {
 
 async function sendAnimation() {
   if (!state.writer || !state.animationPayload) throw new Error('Animation is not ready');
+  const protocol = animationProtocol();
   const payload = state.animationPayload;
   const delayMs = Math.max(0, Number($('animChunkDelay').value) || 0);
   const total = Math.ceil(payload.length / ANIMATION.chunkSize);
@@ -495,7 +632,12 @@ async function sendAnimation() {
   $('animProgressText').textContent = '0%';
   $('animTransferResult').className = 'transfer-result';
   $('animTransferResult').textContent = '転送中…';
-  log('Animation transfer start', { total, payloadBytes:payload.length, chunkSize:ANIMATION.chunkSize, delayMs, opcode:ANIMATION.opcode });
+  const transferStartMs = performance.now();
+  const freeBefore = Number(state.lastDeviceInfo?.freespace);
+  $('animAckDelay').textContent = '-';
+  $('animTransferElapsed').textContent = '-';
+  $('animSpaceDelta').textContent = '-';
+  log('Animation transfer start', { total, payloadBytes:payload.length, chunkSize:ANIMATION.chunkSize, delayMs, protocol, freeBefore: Number.isFinite(freeBefore) ? freeBefore : null });
 
   const ackWait = deferredAck('GetPacketSuccess');
   state.pendingTransferAck = ackWait;
@@ -504,7 +646,7 @@ async function sendAnimation() {
       const start = n * ANIMATION.chunkSize;
       const chunk = payload.slice(start, start + ANIMATION.chunkSize);
       const index = total - 1 - n;
-      const frame = makeFrame(ANIMATION.opcode, total, index, chunk);
+      const frame = makeFrame(protocol.opcode, total, index, chunk);
       await state.writer.writeValueWithoutResponse(frame);
       const verbose = $('verboseTxLog').checked;
       log(`TX animation chunk ${n+1}/${total} index=${index} payload=${chunk.length} frame=${frame.length}`,
@@ -514,19 +656,27 @@ async function sendAnimation() {
       $('animProgressText').textContent = `${pct}%`;
       if (delayMs) await sleep(delayMs);
     }
-    ackWait.arm(30000);
-    log('All animation chunks written; waiting up to 30000 ms for {GetPacketSuccess}');
+    const finalChunkMs = performance.now();
+    ackWait.arm(45000);
+    log('All animation chunks written; waiting up to 45000 ms for {GetPacketSuccess}', { finalChunkAtMs: Math.round(finalChunkMs - transferStartMs) });
     const ack = await ackWait.promise;
     if (state.pendingTransferAck === ackWait) state.pendingTransferAck = null;
-    log('Animation transfer acknowledged', { opcode: ack.opcode, text: ack.text });
+    const ackDelayMs = Math.max(0, (ack.receivedAtMs ?? performance.now()) - finalChunkMs);
+    const elapsedMs = performance.now() - transferStartMs;
+    $('animAckDelay').textContent = `${Math.round(ackDelayMs).toLocaleString()} ms`;
+    $('animTransferElapsed').textContent = `${(elapsedMs / 1000).toFixed(2)} s`;
+    log('Animation transfer acknowledged', { opcode: ack.opcode, text: ack.text, protocol, ackDelayMs: Math.round(ackDelayMs), elapsedMs: Math.round(elapsedMs) });
     $('animTransferResult').className = 'transfer-result success';
-    $('animTransferResult').textContent = '転送成功: type 5データをバッジが受理しました';
+    $('animTransferResult').textContent = `転送成功: ${protocol.label} をバッジが受理しました`; 
 
     if ($('animAutoDisconnect').checked) {
       log('Waiting for post-transfer device info before animation disconnect');
       try {
         const info = await waitForPostTransferDeviceInfo(3000);
-        log('Post-transfer device info received', info.json || { text: info.text });
+        const freeAfter = Number(info.json?.freespace);
+        const spaceDelta = Number.isFinite(freeBefore) && Number.isFinite(freeAfter) ? freeBefore - freeAfter : null;
+        if (spaceDelta !== null) $('animSpaceDelta').textContent = `${spaceDelta >= 0 ? '-' : '+'}${Math.abs(spaceDelta)} units`;
+        log('Post-transfer device info received', { ...(info.json || { text: info.text }), freeBefore: Number.isFinite(freeBefore) ? freeBefore : null, spaceDelta });
       } catch (e) {
         log('Post-transfer device info was not observed; disconnecting anyway', { message:e.message });
       }
@@ -831,16 +981,66 @@ cropCanvas.addEventListener('pointercancel', endCropDrag);
 $('sendImageBtn').addEventListener('click', wrapAsync(sendImage));
 $('animDuration').addEventListener('change', () => { state.animationPayload = null; updateAnimationSettingsUi(); updateSendButton(); });
 $('animFps').addEventListener('change', () => { state.animationPayload = null; updateAnimationSettingsUi(true); updateSendButton(); });
-$('animIntervalMs').addEventListener('change', () => { state.animationPayload = null; updateAnimationSettingsUi(); updateSendButton(); });
+$('animIntervalMs').addEventListener('change', () => {
+  updateAnimationSettingsUi();
+  if (state.animationFrames?.length && state.animationMeta) {
+    state.animationMeta.intervalMs = animationSettings().intervalMs;
+    rebuildAnimationPayloadFromFrames();
+  } else {
+    state.animationPayload = null; updateSendButton();
+  }
+});
+$('animProtocolMode').addEventListener('change', () => {
+  updateAnimationSettingsUi();
+  if (state.animationFrames?.length) rebuildAnimationPayloadFromFrames();
+});
 $('animSourceMode').addEventListener('change', () => {
+  stopAnimationPreview();
   const isFile = $('animSourceMode').value === 'file';
   $('animMediaInput').disabled = !isFile;
   state.animationPayload = null;
   updateSendButton();
 });
-$('animMediaInput').addEventListener('change', () => { state.animationPayload = null; updateSendButton(); });
+$('animMediaInput').addEventListener('change', wrapAsync(async () => {
+  state.animationPayload = null; state.animationFrames = null; $('animPreviewToggleBtn').disabled = true; updateSendButton();
+  const file = $('animMediaInput').files?.[0];
+  if (file) await loadAnimationCropSource(file);
+}));
 $('animQuality').addEventListener('input', () => { $('animQualityValue').textContent = Number($('animQuality').value).toFixed(2); });
 $('animQuality').addEventListener('change', () => { state.animationPayload = null; updateSendButton(); });
+$('animFitMode').addEventListener('change', () => { state.animationPayload = null; state.animationFrames = null; $('animPreviewToggleBtn').disabled = true; resetAnimCrop(); updateSendButton(); });
+$('animZoomInput').addEventListener('input', () => {
+  state.animCrop.zoom = Number($('animZoomInput').value);
+  $('animZoomValue').textContent = `${state.animCrop.zoom.toFixed(2)}×`;
+  state.animationPayload = null; state.animationFrames = null; $('animPreviewToggleBtn').disabled = true;
+  renderAnimSourcePreview(); updateSendButton();
+});
+$('animResetCropBtn').addEventListener('click', () => { state.animationPayload = null; state.animationFrames = null; $('animPreviewToggleBtn').disabled = true; resetAnimCrop(); updateSendButton(); });
+$('animPreviewToggleBtn').addEventListener('click', wrapAsync(toggleAnimationPreview));
+
+const animCropCanvas = $('animPreviewCanvas');
+animCropCanvas.addEventListener('pointerdown', (event) => {
+  if (!state.animCropSource || $('animSourceMode').value !== 'file' || $('animFitMode').value !== 'cover' || state.animPreviewPlaying) return;
+  event.preventDefault(); animCropCanvas.setPointerCapture(event.pointerId);
+  const rect = animCropCanvas.getBoundingClientRect();
+  state.animDrag = { pointerId:event.pointerId, startX:event.clientX, startY:event.clientY, offsetX:state.animCrop.offsetX, offsetY:state.animCrop.offsetY, scaleX:animCropCanvas.width/rect.width, scaleY:animCropCanvas.height/rect.height };
+  animCropCanvas.classList.add('dragging');
+});
+animCropCanvas.addEventListener('pointermove', (event) => {
+  const d = state.animDrag; if (!d || d.pointerId !== event.pointerId) return;
+  event.preventDefault();
+  state.animCrop.offsetX = d.offsetX + (event.clientX-d.startX)*d.scaleX;
+  state.animCrop.offsetY = d.offsetY + (event.clientY-d.startY)*d.scaleY;
+  state.animationPayload = null; state.animationFrames = null; $('animPreviewToggleBtn').disabled = true;
+  renderAnimSourcePreview(); updateSendButton();
+});
+function endAnimCropDrag(event) {
+  const d = state.animDrag; if (!d || d.pointerId !== event.pointerId) return;
+  state.animDrag = null; animCropCanvas.classList.remove('dragging');
+  try { animCropCanvas.releasePointerCapture(event.pointerId); } catch {}
+}
+animCropCanvas.addEventListener('pointerup', endAnimCropDrag);
+animCropCanvas.addEventListener('pointercancel', endAnimCropDrag);
 $('prepareAnimBtn').addEventListener('click', wrapAsync(prepareAnimationTest));
 $('sendAnimBtn').addEventListener('click', wrapAsync(sendAnimation));
 $('sendHexBtn').addEventListener('click', wrapAsync(sendHex));
@@ -860,6 +1060,9 @@ $('downloadLogBtn').addEventListener('click', () => {
 
 updateAnimationSettingsUi(true);
 drawMovingColorBars($('animPreviewCanvas'), 0, animationSettings().frameCount);
+$('animCropHint').classList.add('hidden');
+$('animZoomInput').disabled = true;
+$('animResetCropBtn').disabled = true;
 $('appVersion').textContent = `E-badge Web BLE v${APP_VERSION}`;
 log('App initialized', {
   version: APP_VERSION,
