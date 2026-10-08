@@ -5,8 +5,9 @@ const UUID = Object.freeze({
 });
 
 const IMAGE = Object.freeze({ width: 368, height: 368, chunkSize: 446, opcode: 0x06 });
+const ANIMATION = Object.freeze({ width: 368, height: 368, chunkSize: 446, opcode: 0x05, imageType: 11 });
 const STORAGE_KEY = 'ebadge.macDeviceMap.v1';
-const APP_VERSION = '0.3.0';
+const APP_VERSION = '0.4.0';
 
 const $ = (id) => document.getElementById(id);
 const state = {
@@ -16,6 +17,8 @@ const state = {
   notifier: null,
   jpeg: null,
   payload: null,
+  animationPayload: null,
+  animationFrames: null,
   preferredMac: normalizeMac(new URLSearchParams(location.search).get('mac') || ''),
   sending: false,
   pendingTransferAck: null,
@@ -62,6 +65,7 @@ function setStatus(connected, text) {
 }
 function updateSendButton() {
   $('sendImageBtn').disabled = !(state.writer && state.payload && !state.sending);
+  $('sendAnimBtn').disabled = !(state.writer && state.animationPayload && !state.sending);
 }
 function bindDevice(device) {
   state.device = device;
@@ -217,6 +221,205 @@ function makePicturePayload(jpegBytes) {
   const imb = createImbHeader(jpegBytes.length);
   const suffix = new TextEncoder().encode('}');
   return concatBytes(prefix, imb, jpegBytes, suffix);
+}
+
+
+function writeU32LE(view, offset, value) {
+  view.setUint32(offset, value >>> 0, true);
+}
+
+function makeAnimationPayload(jpegFrames, intervalMs) {
+  if (!Array.isArray(jpegFrames) || jpegFrames.length < 2) throw new Error('Animation needs at least 2 frames');
+  const frameCount = jpegFrames.length;
+  const enc = new TextEncoder();
+  const prefix = enc.encode('{"type":5,"data":');
+  const suffix = enc.encode('}');
+  const pathText = `output/${intervalMs}ms`;
+  const pathBytes = enc.encode(pathText);
+  if (pathBytes.length > 12) throw new Error(`Animation path field is too long: ${pathText}`);
+
+  const firstRecordOffset = 32 + frameCount * 16;
+  const recordOffsets = [];
+  let cursor = firstRecordOffset;
+  for (const jpeg of jpegFrames) {
+    recordOffsets.push(cursor);
+    cursor += 32 + jpeg.length;
+  }
+  const dataLength = cursor;
+  const data = new Uint8Array(dataLength);
+  const view = new DataView(data.buffer);
+
+  // Confirmed from HCI capture: 0x12345678, directory-size field, frame count, frame interval.
+  writeU32LE(view, 0, 0x12345678);
+  writeU32LE(view, 4, 24 + frameCount * 16); // observed: firstRecordOffset - 8
+  writeU32LE(view, 8, frameCount);
+  writeU32LE(view, 12, intervalMs);
+  data.set(pathBytes, 16); // fixed 12-byte field, zero padded
+  writeU32LE(view, 28, dataLength - 1); // observed exact value in captures
+
+  for (let i = 0; i < frameCount; i++) {
+    const tableOffset = 32 + i * 16;
+    const name = `frame_${String(i + 1).padStart(5, '0')}.`;
+    const nameBytes = enc.encode(name);
+    if (nameBytes.length !== 12) throw new Error(`Unexpected frame name length: ${name}`);
+    data.set(nameBytes, tableOffset);
+    writeU32LE(view, tableOffset + 12, recordOffsets[i]);
+  }
+
+  for (let i = 0; i < frameCount; i++) {
+    const jpeg = jpegFrames[i];
+    const recordOffset = recordOffsets[i];
+    const nextOffset = i + 1 < frameCount ? recordOffsets[i + 1] : recordOffsets[0]; // circular list observed
+    writeU32LE(view, recordOffset + 0, recordOffset);
+    writeU32LE(view, recordOffset + 4, nextOffset);
+    writeU32LE(view, recordOffset + 8, ANIMATION.imageType);
+    view.setUint16(recordOffset + 12, ANIMATION.width, true);
+    view.setUint16(recordOffset + 14, ANIMATION.height, true);
+    writeU32LE(view, recordOffset + 16, recordOffset + 32);
+    writeU32LE(view, recordOffset + 20, jpeg.length);
+    writeU32LE(view, recordOffset + 24, 0);
+    writeU32LE(view, recordOffset + 28, 0);
+    data.set(jpeg, recordOffset + 32);
+  }
+
+  return concatBytes(prefix, data, suffix);
+}
+
+function animationSettings() {
+  const durationSec = Number($('animDuration').value);
+  const fps = Number($('animFps').value);
+  const intervalMs = Math.max(1, Math.round(1000 / fps));
+  const frameCount = Math.max(2, Math.round(durationSec * fps));
+  return { durationSec, fps, intervalMs, frameCount };
+}
+
+function updateAnimationSettingsUi() {
+  const { intervalMs, frameCount } = animationSettings();
+  $('animFrameInterval').value = `${intervalMs} ms`;
+  $('animFrameCount').value = String(frameCount);
+  $('animQualityValue').textContent = Number($('animQuality').value).toFixed(2);
+}
+
+function drawMovingColorBars(canvas, frameIndex, frameCount) {
+  const ctx = canvas.getContext('2d', { alpha: false });
+  const w = canvas.width, h = canvas.height;
+  const colors = ['#ffffff','#ffff00','#00ffff','#00ff00','#ff00ff','#ff0000','#0000ff','#000000'];
+  const barW = w / colors.length;
+  const shift = (frameIndex / frameCount) * w;
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, w, h);
+  for (let repeat = -1; repeat <= 1; repeat++) {
+    for (let i = 0; i < colors.length; i++) {
+      ctx.fillStyle = colors[i];
+      ctx.fillRect(i * barW + repeat * w + shift, 0, Math.ceil(barW) + 1, h);
+    }
+  }
+  // A fixed reference line makes motion/direction obvious on the badge.
+  ctx.fillStyle = '#000';
+  ctx.fillRect(Math.floor(w / 2) - 2, 0, 4, h);
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 26px system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'bottom';
+  ctx.fillText(`${frameIndex + 1}/${frameCount}`, w / 2, h - 12);
+}
+
+async function canvasToJpegBytes(canvas, quality) {
+  const blob = await new Promise((resolve, reject) => canvas.toBlob(
+    b => b ? resolve(b) : reject(new Error('JPEG conversion failed')),
+    'image/jpeg', quality
+  ));
+  return new Uint8Array(await blob.arrayBuffer());
+}
+
+async function prepareAnimationTest() {
+  const { durationSec, fps, intervalMs, frameCount } = animationSettings();
+  const quality = Number($('animQuality').value);
+  const canvas = $('animPreviewCanvas');
+  const frames = [];
+  let jpegTotal = 0;
+  $('animTransferResult').className = 'transfer-result';
+  $('animTransferResult').textContent = '生成中…';
+  for (let i = 0; i < frameCount; i++) {
+    drawMovingColorBars(canvas, i, frameCount);
+    const jpeg = await canvasToJpegBytes(canvas, quality);
+    frames.push(jpeg);
+    jpegTotal += jpeg.length;
+    if ((i & 7) === 7) await sleep(0);
+  }
+  drawMovingColorBars(canvas, 0, frameCount);
+  const payload = makeAnimationPayload(frames, intervalMs);
+  state.animationFrames = frames;
+  state.animationPayload = payload;
+  const chunks = Math.ceil(payload.length / ANIMATION.chunkSize);
+  $('animJpegBytes').textContent = `${jpegTotal.toLocaleString()} bytes`;
+  $('animPayloadBytes').textContent = `${payload.length.toLocaleString()} bytes`;
+  $('animChunkCount').textContent = String(chunks);
+  $('animTransferResult').textContent = '生成完了。type 5送信可能です。';
+  log('Animation test prepared', { durationSec, fps, intervalMs, frameCount, jpegTotal, payloadBytes: payload.length, chunks, quality });
+  updateSendButton();
+}
+
+async function sendAnimation() {
+  if (!state.writer || !state.animationPayload) throw new Error('Animation is not ready');
+  const payload = state.animationPayload;
+  const delayMs = Math.max(0, Number($('animChunkDelay').value) || 0);
+  const total = Math.ceil(payload.length / ANIMATION.chunkSize);
+  state.sending = true;
+  updateSendButton();
+  $('animSendProgress').value = 0;
+  $('animProgressText').textContent = '0%';
+  $('animTransferResult').className = 'transfer-result';
+  $('animTransferResult').textContent = '転送中…';
+  log('Animation transfer start', { total, payloadBytes:payload.length, chunkSize:ANIMATION.chunkSize, delayMs, opcode:ANIMATION.opcode });
+
+  const ackWait = deferredWithTimeout(8000, 'GetPacketSuccess');
+  state.pendingTransferAck = ackWait;
+  try {
+    for (let n = 0; n < total; n++) {
+      const start = n * ANIMATION.chunkSize;
+      const chunk = payload.slice(start, start + ANIMATION.chunkSize);
+      const index = total - 1 - n;
+      const frame = makeFrame(ANIMATION.opcode, total, index, chunk);
+      await state.writer.writeValueWithoutResponse(frame);
+      const verbose = $('verboseTxLog').checked;
+      log(`TX animation chunk ${n+1}/${total} index=${index} payload=${chunk.length} frame=${frame.length}`,
+          verbose ? bytesToHex(frame, frame.length) : bytesToHex(frame, 48));
+      const pct = Math.round(((n + 1) / total) * 100);
+      $('animSendProgress').value = pct;
+      $('animProgressText').textContent = `${pct}%`;
+      if (delayMs) await sleep(delayMs);
+    }
+    log('All animation chunks written; waiting for {GetPacketSuccess}');
+    const ack = await ackWait.promise;
+    if (state.pendingTransferAck === ackWait) state.pendingTransferAck = null;
+    log('Animation transfer acknowledged', { opcode: ack.opcode, text: ack.text });
+    $('animTransferResult').className = 'transfer-result success';
+    $('animTransferResult').textContent = '転送成功: type 5データをバッジが受理しました';
+
+    if ($('animAutoDisconnect').checked) {
+      log('Waiting for post-transfer device info before animation disconnect');
+      try {
+        const info = await waitForPostTransferDeviceInfo(3000);
+        log('Post-transfer device info received', info.json || { text: info.text });
+      } catch (e) {
+        log('Post-transfer device info was not observed; disconnecting anyway', { message:e.message });
+      }
+      await sleep(150);
+      if (state.device?.gatt?.connected) {
+        log('Auto disconnect after successful animation transfer');
+        state.device.gatt.disconnect();
+      }
+    }
+  } catch (e) {
+    if (state.pendingTransferAck === ackWait) state.pendingTransferAck = null;
+    $('animTransferResult').className = 'transfer-result error';
+    $('animTransferResult').textContent = `転送失敗: ${e?.message || e}`;
+    throw e;
+  } finally {
+    state.sending = false;
+    updateSendButton();
+  }
 }
 
 function resetCrop(render = true) {
@@ -480,6 +683,12 @@ async function endCropDrag(event) {
 cropCanvas.addEventListener('pointerup', endCropDrag);
 cropCanvas.addEventListener('pointercancel', endCropDrag);
 $('sendImageBtn').addEventListener('click', wrapAsync(sendImage));
+$('animDuration').addEventListener('change', () => { state.animationPayload = null; updateAnimationSettingsUi(); updateSendButton(); });
+$('animFps').addEventListener('change', () => { state.animationPayload = null; updateAnimationSettingsUi(); updateSendButton(); });
+$('animQuality').addEventListener('input', () => { $('animQualityValue').textContent = Number($('animQuality').value).toFixed(2); });
+$('animQuality').addEventListener('change', () => { state.animationPayload = null; updateSendButton(); });
+$('prepareAnimBtn').addEventListener('click', wrapAsync(prepareAnimationTest));
+$('sendAnimBtn').addEventListener('click', wrapAsync(sendAnimation));
 $('sendHexBtn').addEventListener('click', wrapAsync(sendHex));
 $('clearLogBtn').addEventListener('click', () => { $('debugLog').value=''; });
 $('copyLogBtn').addEventListener('click', wrapAsync(async () => {
@@ -495,6 +704,8 @@ $('downloadLogBtn').addEventListener('click', () => {
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 });
 
+updateAnimationSettingsUi();
+drawMovingColorBars($('animPreviewCanvas'), 0, animationSettings().frameCount);
 $('appVersion').textContent = `E-badge Web BLE v${APP_VERSION}`;
 log('App initialized', {
   version: APP_VERSION,

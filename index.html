@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="theme-color" content="#0b6cff" />
   <title>E-badge Web BLE</title>
-  <link rel="stylesheet" href="./app.css?v=0.3.0" />
+  <link rel="stylesheet" href="./app.css?v=0.4.0" />
 </head>
 <body>
   <header class="app-header">
@@ -19,6 +19,7 @@
   <nav class="tabs" aria-label="機能タブ">
     <button class="tab active" data-tab="connection">接続</button>
     <button class="tab" data-tab="image">画像</button>
+    <button class="tab" data-tab="animation">Animation Test</button>
     <button class="tab" data-tab="debug">デバッグ</button>
   </nav>
 
@@ -132,6 +133,82 @@
       </div>
     </section>
 
+    <section id="tab-animation" class="tab-panel">
+      <div class="card">
+        <h2>Animation Test（推定 type 5）</h2>
+        <p class="hint">
+          HCIログから推定した <code>type:5</code> コンテナをブラウザ内で生成します。各フレームは 368×368 JPEG、
+          BLE外枠は <code>F1 05</code>、最大payload 446 bytesです。まずは短いカラーバーで確認してください。
+        </p>
+
+        <div class="grid three">
+          <label>
+            長さ
+            <select id="animDuration">
+              <option value="1" selected>1秒</option>
+              <option value="3">3秒</option>
+              <option value="5">5秒</option>
+            </select>
+          </label>
+          <label>
+            FPS
+            <select id="animFps">
+              <option value="5">5 fps</option>
+              <option value="10" selected>10 fps</option>
+              <option value="15">15 fps</option>
+              <option value="20">20 fps</option>
+              <option value="30">30 fps</option>
+            </select>
+          </label>
+          <label>
+            JPEG品質 <span id="animQualityValue">0.82</span>
+            <input id="animQuality" type="range" min="0.50" max="0.95" step="0.01" value="0.82" />
+          </label>
+          <label>
+            チャンク間隔（ms）
+            <input id="animChunkDelay" type="number" min="0" max="100" step="1" value="12" />
+          </label>
+          <label>
+            フレーム間隔（推定値）
+            <input id="animFrameInterval" type="text" readonly value="100 ms" />
+          </label>
+          <label>
+            フレーム数
+            <input id="animFrameCount" type="text" readonly value="10" />
+          </label>
+        </div>
+
+        <div class="preview-wrap">
+          <canvas id="animPreviewCanvas" width="368" height="368" aria-label="アニメーションテストプレビュー"></canvas>
+          <div class="preview-meta">
+            <div>生成形式: <strong>type 5 / F1 05</strong></div>
+            <div>JPEG総量: <strong id="animJpegBytes">-</strong></div>
+            <div>転送payload: <strong id="animPayloadBytes">-</strong></div>
+            <div>チャンク: <strong id="animChunkCount">-</strong></div>
+          </div>
+        </div>
+
+        <label class="inline-check">
+          <input id="animAutoDisconnect" type="checkbox" checked />
+          転送成功後に自動切断
+        </label>
+
+        <div class="button-row">
+          <button id="prepareAnimBtn">テストアニメーション生成</button>
+          <button id="sendAnimBtn" class="primary" disabled>type 5で送信</button>
+        </div>
+        <div id="animTransferResult" class="transfer-result" aria-live="polite"></div>
+        <div class="progress-wrap">
+          <progress id="animSendProgress" max="100" value="0"></progress>
+          <span id="animProgressText">0%</span>
+        </div>
+
+        <p class="hint warning">
+          これは推定プロトコルの実機試験です。最初は「1秒 / 10fps」のまま送信し、表示成功を確認してから長時間・高fpsを試してください。
+        </p>
+      </div>
+    </section>
+
     <section id="tab-debug" class="tab-panel">
       <div class="card">
         <h2>デバッグログ</h2>
@@ -161,9 +238,9 @@
   </main>
 
   <footer>
-    <small id="appVersion">E-badge Web BLE v0.3.0</small>
+    <small id="appVersion">E-badge Web BLE v0.4.0</small>
   </footer>
 
-  <script type="module" src="./app.js?v=0.3.0"></script>
+  <script type="module" src="./app.js?v=0.4.0"></script>
 </body>
 </html>

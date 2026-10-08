@@ -64,3 +64,7 @@ code { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
 .crop-controls { display:flex; flex-direction:column; justify-content:flex-end; gap:.4rem; font-weight:600; }
 .crop-controls button { align-self:flex-start; }
 footer small { font-size:.72rem; letter-spacing:.02em; }
+
+.grid.three { grid-template-columns:repeat(3,minmax(0,1fr)); }
+#animPreviewCanvas { display:block; width:min(368px,100%); height:auto; aspect-ratio:1; border:1px solid var(--border); border-radius:12px; background:#111; }
+@media (max-width:720px) { .grid.three { grid-template-columns:1fr; } }

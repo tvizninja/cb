@@ -60,3 +60,12 @@ PoCです。IMBヘッダの一部フィールドは実機ログから観測し�
 - 「全体表示」「引き伸ばし」も残しています。
 - フッターにWebアプリのバージョンを常時表示します。
 - CSS/JSの参照URLにもバージョンを付け、更新確認時のキャッシュ混乱を減らしています。
+
+
+## v0.4.0
+
+- HCIログから推定した animation protocol (`type:5`, BLE opcode `F1 05`) の実験送信を追加。
+- ブラウザ内で 368x368 moving color bars をJPEGフレーム列として生成。
+- 1/3/5秒、5/10/15/20/30fpsを選択可能。
+- type 5 container: `0x12345678`, fixed 12-byte `output/<ms>ms`, `frame_00001.` directory, circular frame-record links, image type 11 を再現。
+- まず 1秒 / 10fps の短いテストを推奨。
