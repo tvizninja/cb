@@ -7,7 +7,7 @@ const UUID = Object.freeze({
 const IMAGE = Object.freeze({ width: 368, height: 368, chunkSize: 446, opcode: 0x06 });
 const ANIMATION = Object.freeze({ width: 368, height: 368, chunkSize: 446, opcode: 0x05, imageType: 11 });
 const STORAGE_KEY = 'ebadge.macDeviceMap.v1';
-const APP_VERSION = '0.6.2';
+const APP_VERSION = '0.6.3';
 
 const $ = (id) => document.getElementById(id);
 const state = {
@@ -488,12 +488,13 @@ function once(target, eventName) {
 }
 
 async function waitForDecodedVideoFrame(video) {
-  if ('requestVideoFrameCallback' in HTMLVideoElement.prototype) {
-    await new Promise((resolve) => video.requestVideoFrameCallback(() => resolve()));
-  } else {
-    // seeked can precede the decoded frame becoming drawable on some browsers.
-    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  // requestVideoFrameCallback may never fire for a paused video on some Chromium/Android builds.
+  // `seeked` guarantees the seek completed; two animation frames give the compositor a chance
+  // to expose the decoded frame without introducing an unbounded wait.
+  if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+    await once(video, 'loadeddata');
   }
+  await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
 }
 
 async function seekVideoForCapture(video, t) {
@@ -505,7 +506,7 @@ async function seekVideoForCapture(video, t) {
   await waitForDecodedVideoFrame(video);
 }
 
-async function prepareVideoFrames(file, settings, quality, canvas) {
+async function prepareVideoFrames(file, settings, quality, canvas, onProgress = () => {}) {
   const url = URL.createObjectURL(file);
   const video = document.createElement('video');
   video.preload = 'auto';
@@ -530,6 +531,7 @@ async function prepareVideoFrames(file, settings, quality, canvas) {
       await seekVideoForCapture(video, t);
       drawSourceToCanvas(video, canvas);
       frames.push(await canvasToJpegBytes(canvas, quality));
+      onProgress(i + 1, frameCount, '動画フレーム生成');
       if ((i & 3) === 3) await sleep(0);
     }
     return { frames, sourceDuration, sampledDuration: durationSec, sourceKind: 'video' };
@@ -540,7 +542,7 @@ async function prepareVideoFrames(file, settings, quality, canvas) {
   }
 }
 
-async function prepareGifFrames(file, settings, quality, canvas) {
+async function prepareGifFrames(file, settings, quality, canvas, onProgress = () => {}) {
   if (!('ImageDecoder' in window)) {
     throw new Error('このブラウザではGIFフレーム展開用 ImageDecoder が利用できません。GIFはChromium系の新しいブラウザで試してください。');
   }
@@ -559,6 +561,7 @@ async function prepareGifFrames(file, settings, quality, canvas) {
     const durationUs = Math.max(1000, Number(image.duration) || 100000);
     decoded.push({ image, startUs: totalUs, durationUs });
     totalUs += durationUs;
+    onProgress(i + 1, sourceFrameCount, 'GIFデコード', 0, 35);
   }
 
   try {
@@ -572,6 +575,7 @@ async function prepareGifFrames(file, settings, quality, canvas) {
       while (srcIdx + 1 < decoded.length && decoded[srcIdx + 1].startUs <= targetUs) srcIdx++;
       drawSourceToCanvas(decoded[srcIdx].image, canvas);
       frames.push(await canvasToJpegBytes(canvas, quality));
+      onProgress(i + 1, frameCount, 'GIF JPEG生成', 35, 100);
       if ((i & 3) === 3) await sleep(0);
     }
     return { frames, sourceDuration, sampledDuration: durationSec, sourceKind: 'gif', sourceFrameCount };
@@ -581,15 +585,22 @@ async function prepareGifFrames(file, settings, quality, canvas) {
   }
 }
 
-async function prepareMediaFrames(file, settings, quality, canvas) {
+async function prepareMediaFrames(file, settings, quality, canvas, onProgress = () => {}) {
   if (!file) throw new Error('GIFまたは動画ファイルを選択してください');
   if (file.type === 'image/gif' || /\.gif$/i.test(file.name)) {
-    return prepareGifFrames(file, settings, quality, canvas);
+    return prepareGifFrames(file, settings, quality, canvas, onProgress);
   }
   if (file.type.startsWith('video/') || /\.(mp4|webm|mov|m4v)$/i.test(file.name)) {
-    return prepareVideoFrames(file, settings, quality, canvas);
+    return prepareVideoFrames(file, settings, quality, canvas, onProgress);
   }
   throw new Error(`未対応のアニメーション入力形式です: ${file.type || file.name}`);
+}
+
+function setAnimGenerationProgress(done, total, label = '生成', rangeStart = 0, rangeEnd = 100) {
+  const ratio = total > 0 ? Math.max(0, Math.min(1, done / total)) : 0;
+  const pct = Math.round(rangeStart + ratio * (rangeEnd - rangeStart));
+  $('animGenerateProgress').value = pct;
+  $('animGenerateProgressText').textContent = `${label} ${pct}%`;
 }
 
 async function prepareAnimationTest() {
@@ -601,15 +612,18 @@ async function prepareAnimationTest() {
   let sourceMeta = { sourceKind: 'bars', sampledDuration: settings.durationSec };
   $('animTransferResult').className = 'transfer-result';
   $('animTransferResult').textContent = '生成中…';
+  $('animGenerateProgress').value = 0;
+  $('animGenerateProgressText').textContent = '生成 0%';
 
   if (mode === 'file') {
     const file = $('animMediaInput').files?.[0];
-    sourceMeta = await prepareMediaFrames(file, settings, quality, canvas);
+    sourceMeta = await prepareMediaFrames(file, settings, quality, canvas, setAnimGenerationProgress);
     frames = sourceMeta.frames;
   } else {
     for (let i = 0; i < settings.frameCount; i++) {
       drawMovingColorBars(canvas, i, settings.frameCount);
       frames.push(await canvasToJpegBytes(canvas, quality));
+      setAnimGenerationProgress(i + 1, settings.frameCount, 'カラーバー生成');
       if ((i & 7) === 7) await sleep(0);
     }
     drawMovingColorBars(canvas, 0, settings.frameCount);
@@ -630,6 +644,8 @@ async function prepareAnimationTest() {
   $('animPlaybackPeriod').textContent = `${(frames.length * settings.intervalMs / 1000).toFixed(3)} s`;
   $('animProtocolSummary').textContent = protocol.label + (protocol.experimental ? ' (実験)' : '');
   $('animTransferResult').textContent = `生成完了。${frames.length} frames / interval ${settings.intervalMs} ms`;
+  $('animGenerateProgress').value = 100;
+  $('animGenerateProgressText').textContent = '生成完了 100%';
   $('animPreviewToggleBtn').disabled = false;
   state.animPreviewIndex = 0;
   stopAnimationPreview();

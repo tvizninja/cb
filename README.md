@@ -79,7 +79,7 @@ PoCです。IMBヘッダの一部フィールドは実機ログから観測し�
 - Animation ACK wait increased to 30 seconds after the final chunk; still images use 15 seconds.
 - Existing captured type-5 container structure is preserved: 0x12345678 header, frame directory, circular record links, JPEG records.
 
-## v0.6.2 animation preview / crop
+## v0.6.3 animation preview / crop
 
 - GIF / MP4 / WebM 等を選ぶと、先頭フレームを 368x368 キャンバスへ表示します。
 - `クロップして正方形` では画像タブと同様にドラッグ位置調整と 1.00-3.00x ズームができます。
@@ -94,3 +94,11 @@ PoCです。IMBヘッダの一部フィールドは実機ログから観測し�
 - Sampling is clamped before the media end boundary to reduce accidental black terminal frames.
 - JPEG-sequence preview buttons are immediately below the preview canvas.
 - Animation metadata is consolidated into one block below the crop controls.
+
+
+## v0.6.3 regression fixes
+
+- Added a dedicated animation generation progress bar; video, GIF decode/JPEG encode, and color-bar generation now update it.
+- Removed the unbounded dependency on `requestVideoFrameCallback()` for paused video seeking. Some Chromium/Android builds do not fire it for a paused video, which could leave generation stuck at 0%.
+- Kept the media-end sampling guard from v0.6.2 to avoid sampling exactly at the terminal boundary.
+- Generation progress and transfer progress are now separate and labeled explicitly.

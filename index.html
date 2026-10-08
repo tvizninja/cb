@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="theme-color" content="#0b6cff" />
   <title>E-badge Web BLE</title>
-  <link rel="stylesheet" href="./app.css?v=0.6.2" />
+  <link rel="stylesheet" href="./app.css?v=0.6.3" />
 </head>
 <body>
   <header class="app-header">
@@ -241,12 +241,18 @@
           <button id="prepareAnimBtn">アニメーション生成</button>
           <button id="sendAnimBtn" class="primary" disabled>アニメーション送信</button>
         </div>
+        <div class="progress-caption">生成進捗</div>
+        <div class="progress-wrap">
+          <progress id="animGenerateProgress" max="100" value="0"></progress>
+          <span id="animGenerateProgressText">未生成</span>
+        </div>
         <div id="animTransferResult" class="transfer-result" aria-live="polite"></div>
         <dl class="kv">
           <dt>最終ACK遅延</dt><dd id="animAckDelay">-</dd>
           <dt>転送所要時間</dt><dd id="animTransferElapsed">-</dd>
           <dt>保存領域差分</dt><dd id="animSpaceDelta">-</dd>
         </dl>
+        <div class="progress-caption">送信進捗</div>
         <div class="progress-wrap">
           <progress id="animSendProgress" max="100" value="0"></progress>
           <span id="animProgressText">0%</span>
@@ -288,9 +294,9 @@
   </main>
 
   <footer>
-    <small id="appVersion">E-badge Web BLE v0.6.2</small>
+    <small id="appVersion">E-badge Web BLE v0.6.3</small>
   </footer>
 
-  <script type="module" src="./app.js?v=0.6.2"></script>
+  <script type="module" src="./app.js?v=0.6.3"></script>
 </body>
 </html>
