@@ -7,7 +7,7 @@ const UUID = Object.freeze({
 const IMAGE = Object.freeze({ width: 368, height: 368, chunkSize: 446, opcode: 0x06 });
 const ANIMATION = Object.freeze({ width: 368, height: 368, chunkSize: 446, opcode: 0x05, imageType: 11 });
 const STORAGE_KEY = 'ebadge.macDeviceMap.v1';
-const APP_VERSION = '0.6.1';
+const APP_VERSION = '0.6.2';
 
 const $ = (id) => document.getElementById(id);
 const state = {
@@ -487,6 +487,24 @@ function once(target, eventName) {
   });
 }
 
+async function waitForDecodedVideoFrame(video) {
+  if ('requestVideoFrameCallback' in HTMLVideoElement.prototype) {
+    await new Promise((resolve) => video.requestVideoFrameCallback(() => resolve()));
+  } else {
+    // seeked can precede the decoded frame becoming drawable on some browsers.
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  }
+}
+
+async function seekVideoForCapture(video, t) {
+  const target = Math.max(0, t);
+  if (Math.abs(video.currentTime - target) > 0.0005) {
+    video.currentTime = target;
+    await once(video, 'seeked');
+  }
+  await waitForDecodedVideoFrame(video);
+}
+
 async function prepareVideoFrames(file, settings, quality, canvas) {
   const url = URL.createObjectURL(file);
   const video = document.createElement('video');
@@ -500,12 +518,16 @@ async function prepareVideoFrames(file, settings, quality, canvas) {
     const durationSec = Math.min(settings.durationSec, Math.max(0.05, sourceDuration));
     const frameCount = Math.max(2, Math.round(durationSec * settings.fps));
     const frames = [];
+    // Sample within the requested window and never at the media end boundary.
+    // A small guard interval plus waiting for an actually decoded frame avoids
+    // browsers occasionally yielding a black terminal frame after seeked.
+    const frameStep = 1 / settings.fps;
+    const endGuard = Math.max(0.002, Math.min(frameStep * 0.25, 0.050));
+    const safeEnd = Math.max(0, Math.min(durationSec, sourceDuration) - endGuard);
     for (let i = 0; i < frameCount; i++) {
-      const t = Math.min(Math.max(0, sourceDuration - 0.001), i / settings.fps);
-      if (Math.abs(video.currentTime - t) > 0.0005) {
-        video.currentTime = t;
-        await once(video, 'seeked');
-      }
+      const nominal = i / settings.fps;
+      const t = Math.min(safeEnd, nominal);
+      await seekVideoForCapture(video, t);
       drawSourceToCanvas(video, canvas);
       frames.push(await canvasToJpegBytes(canvas, quality));
       if ((i & 3) === 3) await sleep(0);

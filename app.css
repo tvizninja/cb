@@ -68,3 +68,12 @@ footer small { font-size:.72rem; letter-spacing:.02em; }
 .grid.three { grid-template-columns:repeat(3,minmax(0,1fr)); }
 #animPreviewCanvas { display:block; width:min(368px,100%); height:auto; aspect-ratio:1; border:1px solid var(--border); border-radius:12px; background:#111; }
 @media (max-width:720px) { .grid.three { grid-template-columns:1fr; } }
+
+/* v0.6.2 animation preview ergonomics */
+.anim-preview-block { margin:1rem 0 .6rem; width:min(100%, 368px); }
+.anim-preview-block .crop-stage { width:100%; }
+.preview-actions { display:flex; gap:.55rem; flex-wrap:wrap; margin-top:.55rem; }
+.preview-actions button { flex:1 1 150px; }
+.anim-meta-block { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:.35rem .9rem; margin:.75rem 0 1rem; padding:.75rem .9rem; border:1px solid #d7dce3; border-radius:.65rem; background:#f7f8fa; font-size:.92rem; }
+.anim-meta-block div { display:flex; justify-content:space-between; gap:.7rem; }
+.anim-meta-block strong { text-align:right; overflow-wrap:anywhere; }

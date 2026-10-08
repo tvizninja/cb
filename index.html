@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="theme-color" content="#0b6cff" />
   <title>E-badge Web BLE</title>
-  <link rel="stylesheet" href="./app.css?v=0.6.1" />
+  <link rel="stylesheet" href="./app.css?v=0.6.2" />
 </head>
 <body>
   <header class="app-header">
@@ -196,19 +196,14 @@
           </label>
         </div>
 
-        <div class="preview-wrap">
+        <div class="anim-preview-block">
           <div class="crop-stage">
             <canvas id="animPreviewCanvas" width="368" height="368" aria-label="アニメーション クロップ / JPEG列プレビュー"></canvas>
             <div id="animCropHint" class="crop-hint hidden">ドラッグで位置調整</div>
           </div>
-          <div class="preview-meta">
-            <div>生成形式: <strong id="animProtocolSummary">type 5 / F1 05</strong></div>
-            <div>再生周期: <strong id="animPlaybackPeriod">1.000 s</strong></div>
-            <div>平均JPEG: <strong id="animAverageJpeg">-</strong></div>
-            <div>JPEG総量: <strong id="animJpegBytes">-</strong></div>
-            <div>転送payload: <strong id="animPayloadBytes">-</strong></div>
-            <div>チャンク: <strong id="animChunkCount">-</strong></div>
-            <div>プレビュー: <strong id="animPreviewState">未生成</strong></div>
+          <div class="preview-actions">
+            <button id="animPreviewToggleBtn" type="button" disabled>JPEG列を再生</button>
+            <button id="animResetCropBtn" type="button">クロップを中央に戻す</button>
           </div>
         </div>
 
@@ -225,14 +220,16 @@
             拡大率 <span id="animZoomValue">1.00×</span>
             <input id="animZoomInput" type="range" min="1" max="3" step="0.01" value="1" />
           </label>
-          <div class="crop-controls">
-            <span>クロップ位置</span>
-            <button id="animResetCropBtn" type="button">中央に戻す</button>
-          </div>
-          <div class="crop-controls">
-            <span>生成JPEG列プレビュー</span>
-            <button id="animPreviewToggleBtn" type="button" disabled>再生</button>
-          </div>
+        </div>
+
+        <div class="anim-meta-block" aria-label="アニメーション メタ情報">
+          <div>生成形式 <strong id="animProtocolSummary">type 5 / F1 05</strong></div>
+          <div>再生周期 <strong id="animPlaybackPeriod">1.000 s</strong></div>
+          <div>プレビュー <strong id="animPreviewState">未生成</strong></div>
+          <div>平均JPEG <strong id="animAverageJpeg">-</strong></div>
+          <div>JPEG総量 <strong id="animJpegBytes">-</strong></div>
+          <div>転送payload <strong id="animPayloadBytes">-</strong></div>
+          <div>チャンク <strong id="animChunkCount">-</strong></div>
         </div>
 
         <label class="inline-check">
@@ -291,9 +288,9 @@
   </main>
 
   <footer>
-    <small id="appVersion">E-badge Web BLE v0.6.0</small>
+    <small id="appVersion">E-badge Web BLE v0.6.2</small>
   </footer>
 
-  <script type="module" src="./app.js?v=0.6.1"></script>
+  <script type="module" src="./app.js?v=0.6.2"></script>
 </body>
 </html>
