@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="theme-color" content="#0b6cff" />
   <title>E-badge Web BLE</title>
-  <link rel="stylesheet" href="./app.css?v=0.4.0" />
+  <link rel="stylesheet" href="./app.css?v=0.5.0" />
 </head>
 <body>
   <header class="app-header">
@@ -19,7 +19,7 @@
   <nav class="tabs" aria-label="機能タブ">
     <button class="tab active" data-tab="connection">接続</button>
     <button class="tab" data-tab="image">画像</button>
-    <button class="tab" data-tab="animation">Animation Test</button>
+    <button class="tab" data-tab="animation">アニメーション</button>
     <button class="tab" data-tab="debug">デバッグ</button>
   </nav>
 
@@ -135,13 +135,24 @@
 
     <section id="tab-animation" class="tab-panel">
       <div class="card">
-        <h2>Animation Test（推定 type 5）</h2>
+        <h2>アニメーション / 動画（type 5）</h2>
         <p class="hint">
-          HCIログから推定した <code>type:5</code> コンテナをブラウザ内で生成します。各フレームは 368×368 JPEG、
-          BLE外枠は <code>F1 05</code>、最大payload 446 bytesです。まずは短いカラーバーで確認してください。
+          実機ログで確認した <code>type:5</code> コンテナをブラウザ内で生成します。各フレームは 368×368 JPEG、
+          BLE外枠は <code>F1 05</code>、最大payload 446 bytesです。カラーバーに加えて、GIF / MP4等のローカルファイルをフレーム列へ変換できます。
         </p>
 
         <div class="grid three">
+          <label>
+            ソース
+            <select id="animSourceMode">
+              <option value="bars" selected>ムービングカラーバー</option>
+              <option value="file">GIF / 動画ファイル</option>
+            </select>
+          </label>
+          <label>
+            メディアファイル
+            <input id="animMediaInput" type="file" accept="image/gif,video/*" disabled />
+          </label>
           <label>
             長さ
             <select id="animDuration">
@@ -169,8 +180,8 @@
             <input id="animChunkDelay" type="number" min="0" max="100" step="1" value="12" />
           </label>
           <label>
-            フレーム間隔（推定値）
-            <input id="animFrameInterval" type="text" readonly value="100 ms" />
+            intervalMs（再生間隔）
+            <input id="animIntervalMs" type="number" min="10" max="5000" step="1" value="100" />
           </label>
           <label>
             フレーム数
@@ -194,7 +205,7 @@
         </label>
 
         <div class="button-row">
-          <button id="prepareAnimBtn">テストアニメーション生成</button>
+          <button id="prepareAnimBtn">アニメーション生成</button>
           <button id="sendAnimBtn" class="primary" disabled>type 5で送信</button>
         </div>
         <div id="animTransferResult" class="transfer-result" aria-live="polite"></div>
@@ -204,7 +215,8 @@
         </div>
 
         <p class="hint warning">
-          これは推定プロトコルの実機試験です。最初は「1秒 / 10fps」のまま送信し、表示成功を確認してから長時間・高fpsを試してください。
+          <code>FPS</code> は生成・サンプリング枚数、<code>intervalMs</code> はバッジ側のフレーム表示間隔として独立に送ります。
+          まず同じ10フレームで 100 / 250 / 500 ms を試すと、intervalMsの意味を直接確認できます。
         </p>
       </div>
     </section>
@@ -238,9 +250,9 @@
   </main>
 
   <footer>
-    <small id="appVersion">E-badge Web BLE v0.4.0</small>
+    <small id="appVersion">E-badge Web BLE v0.5.0</small>
   </footer>
 
-  <script type="module" src="./app.js?v=0.4.0"></script>
+  <script type="module" src="./app.js?v=0.5.0"></script>
 </body>
 </html>

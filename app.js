@@ -7,7 +7,7 @@ const UUID = Object.freeze({
 const IMAGE = Object.freeze({ width: 368, height: 368, chunkSize: 446, opcode: 0x06 });
 const ANIMATION = Object.freeze({ width: 368, height: 368, chunkSize: 446, opcode: 0x05, imageType: 11 });
 const STORAGE_KEY = 'ebadge.macDeviceMap.v1';
-const APP_VERSION = '0.4.0';
+const APP_VERSION = '0.5.0';
 
 const $ = (id) => document.getElementById(id);
 const state = {
@@ -288,14 +288,15 @@ function makeAnimationPayload(jpegFrames, intervalMs) {
 function animationSettings() {
   const durationSec = Number($('animDuration').value);
   const fps = Number($('animFps').value);
-  const intervalMs = Math.max(1, Math.round(1000 / fps));
+  const intervalMs = Math.max(1, Math.round(Number($('animIntervalMs').value) || (1000 / fps)));
   const frameCount = Math.max(2, Math.round(durationSec * fps));
   return { durationSec, fps, intervalMs, frameCount };
 }
 
-function updateAnimationSettingsUi() {
-  const { intervalMs, frameCount } = animationSettings();
-  $('animFrameInterval').value = `${intervalMs} ms`;
+function updateAnimationSettingsUi(syncInterval = false) {
+  const fps = Number($('animFps').value);
+  if (syncInterval) $('animIntervalMs').value = String(Math.max(1, Math.round(1000 / fps)));
+  const { frameCount } = animationSettings();
   $('animFrameCount').value = String(frameCount);
   $('animQualityValue').textContent = Number($('animQuality').value).toFixed(2);
 }
@@ -332,31 +333,154 @@ async function canvasToJpegBytes(canvas, quality) {
   return new Uint8Array(await blob.arrayBuffer());
 }
 
+
+function drawSourceToCanvas(source, canvas) {
+  const ctx = canvas.getContext('2d', { alpha: false });
+  const dw = canvas.width, dh = canvas.height;
+  const sw = source.displayWidth || source.videoWidth || source.naturalWidth || source.width;
+  const sh = source.displayHeight || source.videoHeight || source.naturalHeight || source.height;
+  if (!sw || !sh) throw new Error('メディアの寸法を取得できません');
+  const scale = Math.max(dw / sw, dh / sh);
+  const rw = sw * scale, rh = sh * scale;
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, dw, dh);
+  ctx.drawImage(source, (dw - rw) / 2, (dh - rh) / 2, rw, rh);
+}
+
+function once(target, eventName) {
+  return new Promise((resolve, reject) => {
+    const ok = (e) => { cleanup(); resolve(e); };
+    const bad = () => { cleanup(); reject(new Error(`${eventName} failed`)); };
+    const cleanup = () => {
+      target.removeEventListener(eventName, ok);
+      target.removeEventListener('error', bad);
+    };
+    target.addEventListener(eventName, ok, { once: true });
+    target.addEventListener('error', bad, { once: true });
+  });
+}
+
+async function prepareVideoFrames(file, settings, quality, canvas) {
+  const url = URL.createObjectURL(file);
+  const video = document.createElement('video');
+  video.preload = 'auto';
+  video.muted = true;
+  video.playsInline = true;
+  video.src = url;
+  try {
+    await once(video, 'loadedmetadata');
+    const sourceDuration = Number.isFinite(video.duration) ? video.duration : settings.durationSec;
+    const durationSec = Math.min(settings.durationSec, Math.max(0.05, sourceDuration));
+    const frameCount = Math.max(2, Math.round(durationSec * settings.fps));
+    const frames = [];
+    for (let i = 0; i < frameCount; i++) {
+      const t = Math.min(Math.max(0, sourceDuration - 0.001), i / settings.fps);
+      if (Math.abs(video.currentTime - t) > 0.0005) {
+        video.currentTime = t;
+        await once(video, 'seeked');
+      }
+      drawSourceToCanvas(video, canvas);
+      frames.push(await canvasToJpegBytes(canvas, quality));
+      if ((i & 3) === 3) await sleep(0);
+    }
+    return { frames, sourceDuration, sampledDuration: durationSec, sourceKind: 'video' };
+  } finally {
+    URL.revokeObjectURL(url);
+    video.removeAttribute('src');
+    video.load();
+  }
+}
+
+async function prepareGifFrames(file, settings, quality, canvas) {
+  if (!('ImageDecoder' in window)) {
+    throw new Error('このブラウザではGIFフレーム展開用 ImageDecoder が利用できません。GIFはChromium系の新しいブラウザで試してください。');
+  }
+  const data = new Uint8Array(await file.arrayBuffer());
+  const decoder = new ImageDecoder({ data, type: file.type || 'image/gif' });
+  await decoder.tracks.ready;
+  const track = decoder.tracks.selectedTrack;
+  const sourceFrameCount = track?.frameCount || 0;
+  if (!sourceFrameCount) throw new Error('GIFのフレーム数を取得できません');
+
+  const decoded = [];
+  let totalUs = 0;
+  for (let i = 0; i < sourceFrameCount; i++) {
+    const result = await decoder.decode({ frameIndex: i, completeFramesOnly: true });
+    const image = result.image;
+    const durationUs = Math.max(1000, Number(image.duration) || 100000);
+    decoded.push({ image, startUs: totalUs, durationUs });
+    totalUs += durationUs;
+  }
+
+  try {
+    const sourceDuration = totalUs / 1e6;
+    const durationSec = Math.min(settings.durationSec, Math.max(0.05, sourceDuration));
+    const frameCount = Math.max(2, Math.round(durationSec * settings.fps));
+    const frames = [];
+    let srcIdx = 0;
+    for (let i = 0; i < frameCount; i++) {
+      const targetUs = Math.floor((i / settings.fps) * 1e6);
+      while (srcIdx + 1 < decoded.length && decoded[srcIdx + 1].startUs <= targetUs) srcIdx++;
+      drawSourceToCanvas(decoded[srcIdx].image, canvas);
+      frames.push(await canvasToJpegBytes(canvas, quality));
+      if ((i & 3) === 3) await sleep(0);
+    }
+    return { frames, sourceDuration, sampledDuration: durationSec, sourceKind: 'gif', sourceFrameCount };
+  } finally {
+    for (const f of decoded) f.image.close?.();
+    decoder.close?.();
+  }
+}
+
+async function prepareMediaFrames(file, settings, quality, canvas) {
+  if (!file) throw new Error('GIFまたは動画ファイルを選択してください');
+  if (file.type === 'image/gif' || /\.gif$/i.test(file.name)) {
+    return prepareGifFrames(file, settings, quality, canvas);
+  }
+  if (file.type.startsWith('video/') || /\.(mp4|webm|mov|m4v)$/i.test(file.name)) {
+    return prepareVideoFrames(file, settings, quality, canvas);
+  }
+  throw new Error(`未対応のアニメーション入力形式です: ${file.type || file.name}`);
+}
+
 async function prepareAnimationTest() {
-  const { durationSec, fps, intervalMs, frameCount } = animationSettings();
+  const settings = animationSettings();
   const quality = Number($('animQuality').value);
   const canvas = $('animPreviewCanvas');
-  const frames = [];
-  let jpegTotal = 0;
+  const mode = $('animSourceMode').value;
+  let frames = [];
+  let sourceMeta = { sourceKind: 'bars', sampledDuration: settings.durationSec };
   $('animTransferResult').className = 'transfer-result';
   $('animTransferResult').textContent = '生成中…';
-  for (let i = 0; i < frameCount; i++) {
-    drawMovingColorBars(canvas, i, frameCount);
-    const jpeg = await canvasToJpegBytes(canvas, quality);
-    frames.push(jpeg);
-    jpegTotal += jpeg.length;
-    if ((i & 7) === 7) await sleep(0);
+
+  if (mode === 'file') {
+    const file = $('animMediaInput').files?.[0];
+    sourceMeta = await prepareMediaFrames(file, settings, quality, canvas);
+    frames = sourceMeta.frames;
+  } else {
+    for (let i = 0; i < settings.frameCount; i++) {
+      drawMovingColorBars(canvas, i, settings.frameCount);
+      frames.push(await canvasToJpegBytes(canvas, quality));
+      if ((i & 7) === 7) await sleep(0);
+    }
+    drawMovingColorBars(canvas, 0, settings.frameCount);
   }
-  drawMovingColorBars(canvas, 0, frameCount);
-  const payload = makeAnimationPayload(frames, intervalMs);
+
+  const jpegTotal = frames.reduce((n, b) => n + b.length, 0);
+  const payload = makeAnimationPayload(frames, settings.intervalMs);
   state.animationFrames = frames;
   state.animationPayload = payload;
   const chunks = Math.ceil(payload.length / ANIMATION.chunkSize);
+  $('animFrameCount').value = String(frames.length);
   $('animJpegBytes').textContent = `${jpegTotal.toLocaleString()} bytes`;
   $('animPayloadBytes').textContent = `${payload.length.toLocaleString()} bytes`;
   $('animChunkCount').textContent = String(chunks);
-  $('animTransferResult').textContent = '生成完了。type 5送信可能です。';
-  log('Animation test prepared', { durationSec, fps, intervalMs, frameCount, jpegTotal, payloadBytes: payload.length, chunks, quality });
+  $('animTransferResult').textContent = `生成完了。${frames.length} frames / interval ${settings.intervalMs} ms`;
+  log('Animation prepared', {
+    mode, durationSec: settings.durationSec, fps: settings.fps, intervalMs: settings.intervalMs,
+    frameCount: frames.length, jpegTotal, payloadBytes: payload.length, chunks, quality,
+    sourceMeta: { ...sourceMeta, frames: undefined }
+  });
   updateSendButton();
 }
 
@@ -373,7 +497,7 @@ async function sendAnimation() {
   $('animTransferResult').textContent = '転送中…';
   log('Animation transfer start', { total, payloadBytes:payload.length, chunkSize:ANIMATION.chunkSize, delayMs, opcode:ANIMATION.opcode });
 
-  const ackWait = deferredWithTimeout(8000, 'GetPacketSuccess');
+  const ackWait = deferredAck('GetPacketSuccess');
   state.pendingTransferAck = ackWait;
   try {
     for (let n = 0; n < total; n++) {
@@ -390,7 +514,8 @@ async function sendAnimation() {
       $('animProgressText').textContent = `${pct}%`;
       if (delayMs) await sleep(delayMs);
     }
-    log('All animation chunks written; waiting for {GetPacketSuccess}');
+    ackWait.arm(30000);
+    log('All animation chunks written; waiting up to 30000 ms for {GetPacketSuccess}');
     const ack = await ackWait.promise;
     if (state.pendingTransferAck === ackWait) state.pendingTransferAck = null;
     log('Animation transfer acknowledged', { opcode: ack.opcode, text: ack.text });
@@ -500,9 +625,29 @@ function deferredWithTimeout(timeoutMs, label) {
   const promise = new Promise((resolve, reject) => {
     resolveOuter = (value) => { clearTimeout(timer); resolve(value); };
     rejectOuter = (err) => { clearTimeout(timer); reject(err); };
-    timer = setTimeout(() => reject(new Error(`${label} timeout (${timeoutMs} ms)`)), timeoutMs);
+    timer = setTimeout(() => rejectOuter(new Error(`${label} timeout (${timeoutMs} ms)`)), timeoutMs);
   });
   return { promise, resolve: resolveOuter, reject: rejectOuter };
+}
+
+function deferredAck(label = 'GetPacketSuccess') {
+  let timer = null;
+  let settled = false;
+  let resolveOuter, rejectOuter;
+  const promise = new Promise((resolve, reject) => {
+    resolveOuter = (value) => { if (settled) return; settled = true; clearTimeout(timer); resolve(value); };
+    rejectOuter = (err) => { if (settled) return; settled = true; clearTimeout(timer); reject(err); };
+  });
+  return {
+    promise,
+    resolve: resolveOuter,
+    reject: rejectOuter,
+    arm(timeoutMs) {
+      if (settled || timer) return;
+      timer = setTimeout(() => rejectOuter(new Error(`${label} timeout (${timeoutMs} ms after final chunk)`)), timeoutMs);
+    },
+    get settled() { return settled; }
+  };
 }
 
 async function waitForTransferAck(timeoutMs = 5000) {
@@ -532,7 +677,7 @@ async function sendImage() {
   log('Image transfer start', { total, payloadBytes:state.payload.length, chunkSize:IMAGE.chunkSize, delayMs });
 
   // ACK waiter must exist before the last chunk is sent, because the badge can answer quickly.
-  const ackWait = deferredWithTimeout(5000, 'GetPacketSuccess');
+  const ackWait = deferredAck('GetPacketSuccess');
   state.pendingTransferAck = ackWait;
 
   try {
@@ -553,7 +698,8 @@ async function sendImage() {
       if (delayMs) await sleep(delayMs);
     }
 
-    log('All image chunks written; waiting for {GetPacketSuccess}');
+    ackWait.arm(15000);
+    log('All image chunks written; waiting up to 15000 ms for {GetPacketSuccess}');
     const ack = await ackWait.promise;
     if (state.pendingTransferAck === ackWait) state.pendingTransferAck = null;
     log('Image transfer acknowledged', { opcode: ack.opcode, text: ack.text });
@@ -684,7 +830,15 @@ cropCanvas.addEventListener('pointerup', endCropDrag);
 cropCanvas.addEventListener('pointercancel', endCropDrag);
 $('sendImageBtn').addEventListener('click', wrapAsync(sendImage));
 $('animDuration').addEventListener('change', () => { state.animationPayload = null; updateAnimationSettingsUi(); updateSendButton(); });
-$('animFps').addEventListener('change', () => { state.animationPayload = null; updateAnimationSettingsUi(); updateSendButton(); });
+$('animFps').addEventListener('change', () => { state.animationPayload = null; updateAnimationSettingsUi(true); updateSendButton(); });
+$('animIntervalMs').addEventListener('change', () => { state.animationPayload = null; updateAnimationSettingsUi(); updateSendButton(); });
+$('animSourceMode').addEventListener('change', () => {
+  const isFile = $('animSourceMode').value === 'file';
+  $('animMediaInput').disabled = !isFile;
+  state.animationPayload = null;
+  updateSendButton();
+});
+$('animMediaInput').addEventListener('change', () => { state.animationPayload = null; updateSendButton(); });
 $('animQuality').addEventListener('input', () => { $('animQualityValue').textContent = Number($('animQuality').value).toFixed(2); });
 $('animQuality').addEventListener('change', () => { state.animationPayload = null; updateSendButton(); });
 $('prepareAnimBtn').addEventListener('click', wrapAsync(prepareAnimationTest));
@@ -704,7 +858,7 @@ $('downloadLogBtn').addEventListener('click', () => {
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 });
 
-updateAnimationSettingsUi();
+updateAnimationSettingsUi(true);
 drawMovingColorBars($('animPreviewCanvas'), 0, animationSettings().frameCount);
 $('appVersion').textContent = `E-badge Web BLE v${APP_VERSION}`;
 log('App initialized', {

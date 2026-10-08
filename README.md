@@ -69,3 +69,12 @@ PoCです。IMBヘッダの一部フィールドは実機ログから観測し�
 - 1/3/5秒、5/10/15/20/30fpsを選択可能。
 - type 5 container: `0x12345678`, fixed 12-byte `output/<ms>ms`, `frame_00001.` directory, circular frame-record links, image type 11 を再現。
 - まず 1秒 / 10fps の短いテストを推奨。
+
+## v0.5.0
+
+- Animation `fps` and protocol `intervalMs` are independently adjustable.
+- Added local GIF / video import and sampling to 368x368 JPEG frame sequences.
+- GIF decoding uses `ImageDecoder` when available; video uses a local HTMLVideoElement and canvas seeking.
+- Animation ACK timeout now starts after the final BLE chunk, while the ACK listener is armed before transmission.
+- Animation ACK wait increased to 30 seconds after the final chunk; still images use 15 seconds.
+- Existing captured type-5 container structure is preserved: 0x12345678 header, frame directory, circular record links, JPEG records.
